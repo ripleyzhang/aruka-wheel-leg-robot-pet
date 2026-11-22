@@ -1,0 +1,15 @@
+# ESP-IDF generated files
+**/build/
+**/managed_components/
+**/sdkconfig.old
+**/dependencies.lock.old
+
+# macOS
+.DS_Store
+
+# Python
+__pycache__/
+.venv/
+
+# IDE
+.vscode/.browse.c_cpp.db*
