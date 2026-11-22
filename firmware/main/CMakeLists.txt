@@ -1,2 +1,4 @@
 idf_component_register(SRCS "firmware.c"
-                    INCLUDE_DIRS ".")
+    "expression/expression.c"
+                    INCLUDE_DIRS "."
+                    "expression")
