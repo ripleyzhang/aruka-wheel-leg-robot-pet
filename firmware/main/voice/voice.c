@@ -1,8 +1,13 @@
 #include "expression.h"
 #include "voice.h"
 
+#include "esp_mn_iface.h"
+#include "esp_mn_models.h"
+#include "esp_mn_speech_commands.h"
+
 #include <stdint.h>
 #include <stdlib.h>
+#include <stdbool.h>
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -23,8 +28,9 @@ static const char *TAG = "ARUKA_VOICE";
 static esp_codec_dev_handle_t s_mic = NULL;
 static const esp_afe_sr_iface_t *s_afe = NULL;
 static esp_afe_sr_data_t *s_afe_data = NULL;
+static srmodel_list_t *s_models = NULL;
 
-// Task 1: continuously capture microphone data.
+// continuously capture microphone data.
 static void audio_feed_task(void *arg)
 {
     const int chunk = s_afe->get_feed_chunksize(s_afe_data);
@@ -57,41 +63,225 @@ static void audio_feed_task(void *arg)
     }
 }
 
-// Task 2: continuously check WakeNet results.
+
+static esp_err_t init_multinet(
+    const esp_mn_iface_t **out_mn,
+    model_iface_data_t **out_data)
+{
+    // Find the selected English MultiNet model.
+    char *mn_name = esp_srmodel_filter(
+        s_models,
+        ESP_MN_PREFIX,
+        ESP_MN_ENGLISH
+    );
+
+    if (mn_name == NULL) {
+        ESP_LOGE(TAG, "English MultiNet model not found");
+        return ESP_ERR_NOT_FOUND;
+    }
+
+    ESP_LOGI(TAG, "MultiNet model: %s", mn_name);
+
+    const esp_mn_iface_t *mn =
+        esp_mn_handle_from_name(mn_name);
+
+    if (mn == NULL) {
+        ESP_LOGE(TAG, "MultiNet interface unavailable");
+        return ESP_FAIL;
+    }
+
+    // 6000 ms recognition timeout.
+    model_iface_data_t *data =
+        mn->create(mn_name, 6000);
+
+    if (data == NULL) {
+        ESP_LOGE(TAG, "MultiNet model creation failed");
+        return ESP_ERR_NO_MEM;
+    }
+
+    // Initialize the custom command list.
+    ESP_ERROR_CHECK(esp_mn_commands_alloc(mn, data));
+    ESP_ERROR_CHECK(esp_mn_commands_clear());
+
+    // MultiNet6 English command phrases.
+    ESP_ERROR_CHECK(esp_mn_commands_add(1, "BE HAPPY"));
+    ESP_ERROR_CHECK(esp_mn_commands_add(2, "BE ANGRY"));
+    ESP_ERROR_CHECK(esp_mn_commands_add(3, "GO TO SLEEP"));
+    ESP_ERROR_CHECK(esp_mn_commands_add(4, "WAKE UP"));
+
+    // Apply command changes to the recognition model.
+    esp_mn_error_t *cmd_error = esp_mn_commands_update();
+
+    if (cmd_error != NULL) {
+        ESP_LOGE(TAG, "Failed to apply speech commands");
+        return ESP_FAIL;
+    }
+
+    mn->print_active_speech_commands(data);
+
+    *out_mn = mn;
+    *out_data = data;
+
+    ESP_LOGI(TAG, "MultiNet initialized successfully");
+    return ESP_OK;
+}
+
+
+static void execute_voice_command(int command_id)
+{
+    aruka_expression_t expr;
+
+    switch (command_id) {
+        case 1:
+            ESP_LOGI(TAG, "Command: BE HAPPY");
+            expr = ARUKA_EXPR_HAPPY;
+            break;
+
+        case 2:
+            ESP_LOGI(TAG, "Command: BE ANGRY");
+            expr = ARUKA_EXPR_ANGRY;
+            break;
+
+        case 3:
+            ESP_LOGI(TAG, "Command: GO TO SLEEP");
+            expr = ARUKA_EXPR_SLEEPY;
+            break;
+
+        case 4:
+            ESP_LOGI(TAG, "Command: WAKE UP");
+            expr = ARUKA_EXPR_IDLE;
+            break;
+
+        default:
+            ESP_LOGW(TAG, "Unknown command ID: %d",
+                     command_id);
+            return;
+    }
+
+    esp_err_t ret = aruka_set_expression(expr);
+
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG,
+                 "Expression update failed: %s",
+                 esp_err_to_name(ret));
+    }
+}
+
+
 static void wake_detect_task(void *arg)
 {
-    ESP_LOGI(TAG, "WakeNet detection started");
-    ESP_LOGI(TAG, "Say the configured wake word!");
+    const esp_mn_iface_t *mn = NULL;
+    model_iface_data_t *mn_data = NULL;
+
+    if (init_multinet(&mn, &mn_data) != ESP_OK) {
+        ESP_LOGE(TAG, "MultiNet initialization failed");
+        vTaskDelete(NULL);
+        return;
+    }
+
+    const int afe_chunk =
+        s_afe->get_fetch_chunksize(s_afe_data);
+
+    const int mn_chunk =
+        mn->get_samp_chunksize(mn_data);
+
+    if (afe_chunk != mn_chunk) {
+        ESP_LOGE(TAG,
+                 "Chunk mismatch: AFE=%d MultiNet=%d",
+                 afe_chunk, mn_chunk);
+        mn->destroy(mn_data);
+        vTaskDelete(NULL);
+        return;
+    }
+
+    bool listening = false;
+
+    ESP_LOGI(TAG, "Voice recognition ready");
+    ESP_LOGI(TAG, "Say 'Hi ESP'");
 
     while (1) {
-        afe_fetch_result_t *result = s_afe->fetch(s_afe_data);
+
+        afe_fetch_result_t *result =
+            s_afe->fetch(s_afe_data);
 
         if (!result || result->ret_value == ESP_FAIL) {
             ESP_LOGE(TAG, "AFE fetch failed");
             break;
         }
 
+        // WakeNet: enter the listening state.
         if (result->wakeup_state == WAKENET_DETECTED) {
-            ESP_LOGI(TAG, "==========================");
+
             ESP_LOGI(TAG, "WAKE WORD DETECTED!");
-            ESP_LOGI(TAG, "Model index: %d",
-                     result->wakenet_model_index);
-            ESP_LOGI(TAG, "Word index: %d",
-                     result->wake_word_index);
 
-            ESP_LOGI(TAG, "Switching face to LISTENING...");
-            esp_err_t ret = aruka_set_expression(ARUKA_EXPR_LISTENING);
+            mn->clean(mn_data);
 
-            if (ret == ESP_OK) {
-                ESP_LOGI(TAG, "Expression switched successfully!");
-            } else {
-                ESP_LOGI(TAG, "Expression switched failed: %s",
-                        esp_err_to_name(ret));
+            listening = true;
+
+            ESP_ERROR_CHECK(
+                aruka_set_expression(
+                    ARUKA_EXPR_LISTENING
+                )
+            );
+
+            ESP_LOGI(TAG, "Waiting for voice command...");
+        }
+
+        // Ignore speech commands before wake-up.
+        if (!listening) {
+            continue;
+        }
+
+        // Process audio using MultiNet.
+        esp_mn_state_t state =
+            mn->detect(mn_data, result->data);
+
+        if (state == ESP_MN_STATE_DETECTED) {
+
+            esp_mn_results_t *cmd =
+                mn->get_results(mn_data);
+
+            if (cmd != NULL && cmd->num > 0) {
+
+                int command_id = cmd->command_id[0];
+
+                ESP_LOGI(TAG,
+                         "COMMAND DETECTED: id=%d, phrase=%d, confidence=%.3f",
+                         command_id,
+                         cmd->phrase_id[0],
+                         (double)cmd->prob[0]);
+
+                execute_voice_command(command_id);
             }
-            ESP_LOGI(TAG, "==========================");
+
+            // Single-command mode:
+            // require another wake word for next command.
+            listening = false;
+
+            s_afe->enable_wakenet(s_afe_data);
+
+            ESP_LOGI(TAG, "Waiting for wake word...");
+        }
+
+        else if (state == ESP_MN_STATE_TIMEOUT) {
+
+            ESP_LOGI(TAG, "Command listening timed out");
+
+            listening = false;
+
+            s_afe->enable_wakenet(s_afe_data);
+
+            ESP_ERROR_CHECK(
+                aruka_set_expression(
+                    ARUKA_EXPR_IDLE
+                )
+            );
+
+            ESP_LOGI(TAG, "Waiting for wake word...");
         }
     }
 
+    mn->destroy(mn_data);
     vTaskDelete(NULL);
 }
 
@@ -119,19 +309,19 @@ esp_err_t aruka_voice_init(void)
     }
 
     // The model partition is named "model".
-    srmodel_list_t *models = esp_srmodel_init("model");
+    s_models = esp_srmodel_init("model");
 
-    if (!models || models->num == 0) {
+    if (!s_models || s_models->num == 0) {
         ESP_LOGE(TAG, "No ESP-SR models found");
         return ESP_FAIL;
     }
 
-    ESP_LOGI(TAG, "Found %d speech models", models->num);
+    ESP_LOGI(TAG, "Found %d speech models", s_models->num);
 
     // One microphone channel: "M".
     afe_config_t *config = afe_config_init(
         "M",
-        models,
+        s_models,
         AFE_TYPE_SR,
         AFE_MODE_LOW_COST
     );
