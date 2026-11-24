@@ -5,6 +5,7 @@
 #include "expression/expression.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "voice/voice.h"
 
 static const char * TAG = "ARUKA";
 
@@ -13,31 +14,15 @@ void app_main(void) {
 
   ESP_ERROR_CHECK(aruka_expression_init());
 
-  ESP_LOGI(TAG, "Expression test started!");
+  ESP_ERROR_CHECK(aruka_set_expression(ARUKA_EXPR_IDLE));
+  ESP_LOGI(TAG, "Expression system ready");
 
-  aruka_expression_t expressions[] = {
-      ARUKA_EXPR_IDLE,
-      ARUKA_EXPR_HAPPY,
-      ARUKA_EXPR_ANGRY,
-      ARUKA_EXPR_SLEEPY,
-      ARUKA_EXPR_LISTENING,
-  };
+  ESP_LOGI(TAG, "Initializing voice system...");
+  ESP_ERROR_CHECK(aruka_voice_init());
+  ESP_LOGI(TAG, "WakeNet initialized");
+  ESP_LOGI(TAG, "Say 'Hi ESP' to wake Aruka!");
 
-  const int num_expressions = sizeof(expressions) / sizeof(expressions[0]);
-
-  int index = 0;
-
-  while (1) {
-    ESP_LOGI(TAG, "Switching expression: %d", index);
-
-    esp_err_t ret = aruka_set_expression(expressions[index]);
-
-    if (ret != ESP_OK) {
-      ESP_LOGE(TAG, "Expression switch failed: %s", esp_err_to_name(ret));
-    }
-
-    index = (index + 1) % num_expressions;
-
-    vTaskDelay(pdMS_TO_TICKS(3000));
+  while(1) {
+      vTaskDelay(pdMS_TO_TICKS(1000));
   }
 }
