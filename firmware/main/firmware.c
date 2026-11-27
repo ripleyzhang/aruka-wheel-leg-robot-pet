@@ -11,7 +11,9 @@ static const char * TAG = "ARUKA";
 
 // Set to 1 for the local INT-02 test.
 // Set to 0 to run the normal voice application.
-#define INT02_MOCK_TEST 1
+#ifndef INT02_MOCK_TEST
+#define INT02_MOCK_TEST 0
+#endif
 
 #if INT02_MOCK_TEST
 
@@ -20,7 +22,7 @@ static void post_test_event(aruka_event_type_t type) {
   ESP_ERROR_CHECK(ret);
 
   // Let the asynchronous Behavior Task process the event.
-  vTaskDelay(pdMS_TO_TICKS(350));
+  vTaskDelay(pdMS_TO_TICKS(1000));
 }
 
 static void confirm_test_task(uint8_t task_id) {
@@ -28,7 +30,7 @@ static void confirm_test_task(uint8_t task_id) {
 
   ESP_ERROR_CHECK(ret);
 
-  vTaskDelay(pdMS_TO_TICKS(350));
+  vTaskDelay(pdMS_TO_TICKS(1000));
 }
 
 static void wish_cycle_test_task(void * arg) {
@@ -36,6 +38,8 @@ static void wish_cycle_test_task(void * arg) {
 
   ESP_LOGI(TAG, "=== INT-02 TEST START ===");
 
+  post_test_event(ARUKA_EVENT_WAKE_WORD);
+  post_test_event(ARUKA_EVENT_COMMAND_TIMEOUT);
   post_test_event(ARUKA_EVENT_CYCLE_START);
 
   confirm_test_task(1);
@@ -43,8 +47,12 @@ static void wish_cycle_test_task(void * arg) {
   confirm_test_task(2);
   confirm_test_task(3);
 
+  post_test_event(ARUKA_EVENT_WAKE_WORD);
+  post_test_event(ARUKA_EVENT_COMMAND_TIMEOUT);
   post_test_event(ARUKA_EVENT_REWARD_CLAIMED);
   post_test_event(ARUKA_EVENT_REWARD_CLAIMED);
+  post_test_event(ARUKA_EVENT_WAKE_WORD);
+  post_test_event(ARUKA_EVENT_COMMAND_TIMEOUT);
 
   post_test_event(ARUKA_EVENT_PRAISE_RECEIVED);
 
